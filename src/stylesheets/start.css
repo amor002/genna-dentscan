@@ -1,0 +1,66 @@
+.login-btn {
+    width: 100%;
+    
+}
+
+.login-form {
+    box-shadow: 1px 1px 8px 1px #8184a1;
+    padding: 50px;
+    background-color: #fff;
+    margin: 10px 40px;
+    min-width: 400px;
+}
+
+
+.start-container {
+    margin-top: 30px;
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: center;
+    align-items: center;
+    
+}
+
+
+.start-container > .side-image, .start-container > .side-image > img  {
+    width: 100%;
+    height: 100%;
+}
+
+@media (max-width: 760px){
+    .start-container > .side-image {
+        display: none;
+    }
+}
+
+@media (max-width: 460px) {
+    .login-form {
+        min-width: auto;
+        margin: 0 20px;
+    }
+}
+
+.reservation-form {
+    background-color: #fff;
+    box-shadow: 1px 1px 8px 1px #8184a1;
+    padding: 50px;
+    max-width: 800px;
+    margin: 10 20px;
+    width: 80%;
+    z-index: 4;
+}
+
+.bg-style {
+    position: fixed;
+    z-index: 0;
+    width: 100%;
+    bottom: 0;
+}
+
+
+@media(max-width: 580px) {
+    .reservation-form {
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+}

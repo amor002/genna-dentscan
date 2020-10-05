@@ -1,0 +1,55 @@
+
+.ant-layout-sider-children {
+    background: #fff;
+}
+
+.ant-layout-sider-trigger {
+    background: #1890ff;
+    color: #fff;
+}
+
+.float-btn {
+    
+    bottom: 20px;
+    right: 20px;
+    position: fixed;
+    box-shadow: 1px 1px 10px .1px grey;
+    z-index: 30;
+}
+
+.ant-picker {
+    width: 95%;
+}
+
+.clinic-page {
+    display: flex;
+     height: 80%;
+}
+
+.clinic-aside {
+    display: flex;
+    flex-direction: column;
+    color: black;
+    width: 120px;
+    height: 170px;
+    align-items: center;
+}
+
+.clinic-aside > a {
+    color: #797575;
+    margin-top: 8px;
+}
+
+.clinic-aside > a.active {
+    color: dodgerblue;
+}
+
+@media (max-width: 580px) {
+    .clinic-page {
+        flex-direction: column;
+    }
+
+    .clinic-aside {
+        width: 100%;
+    }
+}
