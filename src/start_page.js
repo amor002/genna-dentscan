@@ -1,9 +1,11 @@
-import React, { useRef, useContext, useState } from 'react';
+import React, { useRef, useContext, useState, useEffect } from 'react';
 import {useHistory} from 'react-router-dom';
 import {Input, Button, Form, Select, message} from 'antd';
 import {UserOutlined, LockOutlined, CopyOutlined} from '@ant-design/icons';
 import loginImage from './images/login.svg';
-import {doctors, radiationTypes, userContext} from './App';
+import { Loader } from './kit.js';
+import {doctors, userContext} from './App';
+import * as firebase from 'firebase/app';
 
 export default () => {
     const history = useHistory();
@@ -16,10 +18,13 @@ export default () => {
 
 
 export const LoginPage = () => {
+    const [form] = Form.useForm();
+    const [loading, setLoading] = useState(false);
+    const history = useHistory();
 
     return (
         <div className="start-container">
-            <Form className='login-form'>
+            <Form form={form} className='login-form'>
                 <h2 style={{textAlign: 'center'}}>ادخل بياناتك</h2>
                 <Form.Item
                 name='username'
@@ -40,7 +45,19 @@ export const LoginPage = () => {
                 >
                 <Input type='password' dir='ltr' suffix={<LockOutlined style={{color: 'grey', marginRight: '10px'}}  />} placeholder="كلمة المرور" />
                 </Form.Item>
-                <Button className='login-btn' htmlType='submit' type='primary'>تسجيل الدخول</Button>
+                <Button onClick={async () => {
+                    const data = await form.validateFields();
+                    setLoading(true);
+                    firebase.auth().signInWithEmailAndPassword(`${data.username}@ganna.com`, data.password).then(() => {
+                        setTimeout(() => history.push('/'), 200);
+                    })
+                    .catch((e) => {
+                        setTimeout(() => {try{ setLoading(false)}catch{}}, 200);
+                        message.error('كلمة المرور او اسم المستخدم غير صحيحين');
+                    });
+
+                }} className='login-btn' dir='ltr' loading={loading}  htmlType='submit' type='primary'>تسجيل الدخول</Button>
+                
             </Form>
             <div className='side-image'>
                 <img src={loginImage} alt='#'/>
@@ -52,13 +69,42 @@ export const LoginPage = () => {
 
 export const ReservationPage = ({onSubmit}) => {
     const user = useContext(userContext);
+
     const [radiationsTimeMessages, setMessages] = useState([]);
+    const [doctors, setDoctors] = useState(undefined);
+    const [form] = Form.useForm();
+    
+    const [radiations, setRadiations] = useState(undefined);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        firebase.firestore().collection('radiations').get().then(sn => {
+        setRadiations(sn.docs.map(doc => {return {...doc.data(), id: doc.id}}));
+        }).catch(() => {
+        setRadiations([]);
+        });
+
+        if(user.isAdmin || user.isAnonymous) {
+            firebase.firestore().collection('doctors').doc('all').get().then((doc) => {
+                if(doc.exists) {
+                    setDoctors(doc.data().doctors);
+                    
+                }else {
+                    setDoctors([]);
+                }
+            });
+        }else {
+            setDoctors([]);
+        }
+    }, []);
+
+    if(radiations === undefined || doctors === undefined) return <Loader />;
     return (
     <div className='start-container'>
         
         <div className='reservation-form'>
             <h2 style={{textAlign: 'center'}}><b>يمكن الحجز الكترونيا الان !</b></h2>
-            <Form onSubmit={onSubmit}>
+            <Form form={form}>
                 {!user.isPatient ?
                 <>
                 <Form.Item
@@ -86,12 +132,17 @@ export const ReservationPage = ({onSubmit}) => {
                 <>{ !user.isDoctor ? <Form.Item
                 name='doctor'
                 label='الطبيب المسؤل'
-                required
+                rules={[
+                    {
+                        required: true
+                    }
+                ]}
                 >
                     <Select defaultValue='--اختر الطبيب--'>
                         {[...doctors, 'اخر'].map((doctor, i) => {
-                        return <Select.Option key={i}>{doctor}</Select.Option>
-                        })}
+                            
+                        return <Select.Option key={i} value={i !== doctors.length ? JSON.stringify(doctor) : 'other'}>{i !== doctors.length ? Object.values(doctor)[0] : doctor}</Select.Option>
+                        })} 
                     </Select>
                 </Form.Item> : <></>}</></> : <></>}
 
@@ -104,9 +155,9 @@ export const ReservationPage = ({onSubmit}) => {
                 }]}
                 >
                     <Select mode='multiple' onChange={(selected) => {
-                        setMessages(selected.map(i => radiationTypes[i].message ))
+                        setMessages(selected.map(i => radiations[i].message ))
                     }} placeholder='اسم الاشعة'>
-                        {radiationTypes.map((radiation, i) => {
+                        {radiations.map((radiation, i) => {
                         return <Select.Option key={i}>{radiation.name}</Select.Option>
                         })}
                     </Select>
@@ -128,7 +179,22 @@ export const ReservationPage = ({onSubmit}) => {
                 <ul>
                 {radiationsTimeMessages.map((msg, i) => <li key={i}>{msg}</li>)}
                 </ul>
-                <Button htmlType='submit' type='primary' style={{width: '100%'}}>احجز الان</Button>
+                <Button onClick={async () => {
+                    const data = await form.validateFields();
+                    data.radiations = data.radiations.map(r => radiations[r]);
+                    data.doctor = user.isAdmin || user.isAnonymous ? (data.doctor === 'other' ? data.doctor : JSON.parse(data.doctor)) : null;      
+                    setLoading(true);
+                    await onSubmit(data);
+                    setLoading(false);
+                    form.setFieldsValue({
+                        name: '',
+                        phoneNumber: '',
+                        address: '',
+                        radiations: [],
+                        doctor: ''
+                    });
+                    
+                    }} htmlType='submit' dir='ltr' loading={loading} type='primary' style={{width: '100%'}}>احجز الان</Button>
             </Form>
         </div>
         <div className='bg-style'>
@@ -146,8 +212,9 @@ export const ContactPage = () => {
         <div style={{width: '100%', 'height': '70%', display: 'flex', justifyContent: 'center', padding: '30px',alignItems: 'center', flexDirection: 'column'}}>
             <h1><b>يمكنكم التواصل معنا لاي اسفسارات علي هذا الرقم</b></h1>
             <div dir='ltr' style={{display: 'flex'}}>
-                <Input ref={input} value='+0201101306910' disabled/>
+                <Input ref={input} value='+0201101306910' />
                 <Button onClick={() => {
+
                     input.current.select();
                     document.execCommand('copy');
                     message.success('تم نسخ رقم الهاتف بنجاح');

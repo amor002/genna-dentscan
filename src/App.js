@@ -1,4 +1,4 @@
-import React, {useContext} from 'react';
+import React, {useContext, useState, useEffect} from 'react';
 import 'antd/dist/antd.css';
 import './stylesheets/App.css';
 import './stylesheets/start.css';
@@ -6,144 +6,13 @@ import './stylesheets/start.css';
 import {Route, BrowserRouter as Router, Switch} from 'react-router-dom';
 import StartPage, {LoginPage, ReservationPage, ContactPage} from './start_page';
 import AdminMain from './admin';
-import DoctorStudies, {PreviewStudyPage, DoctorProfilePage, SearchPage, NavBar, AddStudyPage} from './doctor';
-import {Page404} from './kit';
+import DoctorStudies, {PreviewStudyPage, DoctorProfilePage, SearchPage, NavBar, AddStudyPage, DoctorsList} from './doctor';
+import {Page404, Loader} from './kit';
+import * as firebase from 'firebase/app';
 
 
 export const userContext = React.createContext();
 
-export const clinicModel = {
-  name: 'elbasmala',
-  doctors: [
-    {123: 'ahmed mohamed'}
-  ]
-}
-
-export const adminsModel = [
-  {
-    name: 'ahmed mohamed',
-    password: 'my password',
-    degree: 2
-  },
-  {
-    name: 'ahmed mohamed',
-    password: 'my password',
-    degree: 2
-  },
-  {
-    name: 'ahmed mohamed',
-    password: 'my password',
-    degree: 1
-  },
-  {
-    name: 'ahmed mohamed',
-    password: 'my password',
-    degree: 1
-  },
-  {
-    name: 'ahmed mohamed',
-    password: 'my password',
-    degree: 1
-  },
-  {
-    name: 'ahmed mohamed',
-    password: 'my password',
-    degree: 1
-  }
-]
-
-
-export const userModel = {
-  displayName: 'مروان مفيد',
-  isAdmin: false,
-  isDoctor: true,
-  isAccountant: false,
-  isPatient: false,
-  uid: 1412,
-  acountantClinicId: 'a123mlkmASDOiojaosdi'
-}
-
-export const logModel = {
-  studyName: 'ahmed hossam',
-  radiations: ['x-ray', 'gamma-ray'],
-  totalPayed: 150,
-  totalRecieved: 80,
-  id: 'asapodkOPASkdapOKSDPOK',
-  doctorID: '131',
-  clinicID: 'ASDOIksioakdOASIdioa',
-  doctorName: 'marwan mofeed',
-  date: new Date(141131),
-  code: '141'
-}
-
-export const doctorModel = {
-  specialization: 'درس العقل',
-  contractionDate: new Date(),
-  phoneNumber: '01007927278',
-  image: 'https://cdn.sanity.io/images/0vv8moc6/hcplive/0ebb6a8f0c2850697532805d09d4ff10e838a74b-200x200.jpg?auto=format',
-  id: 1412,
-  whatsAppNumber: null,
-  name: 'مروان مفيد',
-  balance: 300,
-  cardImage: null,
-  responsibleEmployee: 'ahmed hossam',
-  secretaryName: 'karim ayman',
-  secretaryPhoneNumber: '01005169329',
-  email: 'doctor@doctor.com',
-  showDiscount: true,
-  earns: {
-    type: 'value',
-    value: '10'
-  },
-  discount: {
-    type: 'percentage',
-    value: '30',
-    discountRadiations: ['x-rays', 'gamma-rays']
-  }
-}
-export const studiesModel = [
-  {
-    phoneNumber:  '01007927278',
-    doctorName: 'marwan mofeed',
-    doctorID: '123',
-    clinicID: '1sadJjsdAISJdj',
-    name: 'عمرو ياسر محمد',
-    id: 321,
-    radiations: [{
-      image: 'https://firebasestorage.googleapis.com/v0/b/center-59cef.appspot.com/o/MRBRAIN.jpg?alt=media&token=ec0ef3e8-2a47-4180-933d-0b527a80e61d',
-      type: 'X-Ray',
-      date: new Date()
-    },{
-      image: 'https://firebasestorage.googleapis.com/v0/b/center-59cef.appspot.com/o/case5b.jpg?alt=media&token=7ba25caf-5ec9-4137-9b67-640d3c149f8c',
-      type: 'X-Ray',
-      date: new Date(1234124)
-    }],
-    address: 'القاهرة جيزة'
-  }
-]
-
-export const doctors = [
-  'marwan mofeed',
-  'ayman hegazy'
-  
-]
-
-export const radiationTypes = [
-  {name: 'x-ray', message: 'متاح حتي السابعة مسائا', price: 300},
-  {name: 'بيتا لابيتا', message: 'متاح حتي الثامنة مسائا', price: 300},
-  {name: 'alpha-ray', message: 'متاح حتي العاشرة مسائا', price: 300}
-]
-
-export const reservationsModel = [
-  {
-    doctor: {code: '183', name: 'marwan mofeed'},
-    radiations: ['x-ray', 'gamma-ray'],
-    phoneNumber: '01007927278',
-    address: 'cairo/giza',
-    name: 'عمرو ياسر محمد',
-
-  }
-]
 
 const AnonymousIndex = () => {
   const user = useContext(userContext);
@@ -155,7 +24,24 @@ const AnonymousIndex = () => {
         <Switch>
           <Route path='/login' component={LoginPage}/>
           <Route path='/reserve'>
-            <ReservationPage/>
+            <ReservationPage onSubmit={async (data) => {
+              
+             
+              let res = await firebase.functions().httpsCallable('makeReservation')({
+                ...data,
+                radiations: data.radiations.map(r => r.id),
+                doctor: {
+                  id: Object.keys(data.doctor)[0],
+                  name: Object.values(data.doctor)[0]
+                }
+              });
+
+              if(res.data.ok) {
+                window.alert('تم طلب الحجز بنجاح, برجاء الانتظار حتي يتم الاتصال بك لتحديد المعاد او الاتصال بنا');
+              }else {
+                window.alert('Oops, something went wrong');
+              }
+            }}/>
           </Route>
           <Route path='/contact' component={ContactPage}/>
           <Route exact path="/" component={StartPage}/>
@@ -171,19 +57,29 @@ const AnonymousIndex = () => {
 
 const DoctorIndex = () => {
   const user = useContext(userContext);
-  if(user.isDoctor || user.isAccountant) {
-    console.log('hey');
+  if(user.isDoctor) {
     return (
       <>
       <NavBar />
       <Switch>
             <Route  path='/add-study' component={AddStudyPage}/>
-            <Route  path='/preview-study/:phoneNumber' component={PreviewStudyPage}/>
-            <Route path='/profile/:doctorID' component={DoctorProfilePage}/>
+            <Route  path='/preview-study/:id' component={PreviewStudyPage}/>
+            <Route path='/profile' component={DoctorProfilePage}/>
             <Route path='/search/:type/:value' component={SearchPage}/>
             <Route exact path='/' component={DoctorStudies}/> 
             <Route component={Page404}/>
       </Switch>
+      </>
+    );
+  }
+
+  if(user.isAccountant) {
+    return (
+      <>
+        <NavBar />
+        <Route path='/'>
+            <div dir='ltr' style={{margin: 30, textAlign: 'left'}}><DoctorsList /></div>
+        </Route>
       </>
     );
   }
@@ -194,15 +90,37 @@ const DoctorIndex = () => {
 
 const PatientIndex = () => {
   const user = useContext(userContext);
+  
   if(user.isPatient) {
+    
     return <>
       <NavBar />
       <Switch>
         <Route exact path='/'>
-          <PreviewStudyPage id={user.uid}/>
+          <PreviewStudyPage patient={user}/>
         </Route>
         <Route exact path='/reserve'>
-          <ReservationPage />
+          <ReservationPage onSubmit={async (data) => {
+            let doctor = {
+              name: user.doctorName,
+              id: user.doctorID
+            }
+
+            let res = await firebase.functions().httpsCallable('makeReservation')({
+              phoneNumber: user.phoneNumber,
+              doctor: doctor,
+              address: user.address,
+              name: user.name,
+              radiations: data.radiations.map(r => r.id)  
+            });
+
+            if(res.data.ok) {
+              window.alert('تم حفظ طلب الحجز بنجاح برجاء الاتصال او انتظار مكالمة لتحديد المعاد');
+            }else {
+              window.alert('Oops, something went wrong');
+            }
+
+          }} />
         </Route>
         <Route component={Page404}/>
       </Switch>
@@ -222,9 +140,48 @@ const AdminIndex = () => {
 }
 
 function App() {
+  const [currentUser, setUser] = useState(undefined);
+  useEffect(() => {
+    firebase.auth().onAuthStateChanged(async function(user) {
+      if (user) {
+        
+        let token = await user.getIdTokenResult();
+        let userProfile = {...user,  setUser: setUser};
+        
+        if(token.claims.adminDegree) {
+
+          userProfile.isAdmin = true;
+          userProfile.adminDegree = token.claims.adminDegree;
+        }
+
+        if(token.claims.clinicID) {
+          userProfile.isAccountant = true;
+          userProfile.clinicID = token.claims.clinicID
+        }
+
+        userProfile.isPatient = token.claims.isPatient;
+        userProfile.isDoctor = token.claims.isDoctor;
+        userProfile.doctorClinic = token.claims.doctorClinic;
+
+        if(userProfile.isPatient) {
+          let userDoc = await firebase.firestore().collection('studies').doc(userProfile.uid).get();
+          userProfile = {...userProfile, ...userDoc.data()};
+        }
+
+        setUser(userProfile);
+      } else {
+        setUser({setUser: setUser, isAnonymous: true});
+      }
+    });
+  }, []);
+
+  if(currentUser === undefined) {
+    return <div style={{width: '100%', height: '100vh'}}><Loader /></div>;
+  }
+
   return (
     <div className="App">
-      <userContext.Provider value={userModel}>
+      <userContext.Provider value={currentUser}>
         <Router>  
 
           <DoctorIndex />

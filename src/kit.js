@@ -1,9 +1,9 @@
-import React, { useState, useRef } from 'react';
-import { Table, Input, Popconfirm, Form, Upload, Modal, Button, Row, Col, InputNumber, Spin } from 'antd';
+import React, { useState,  useEffect } from 'react';
+import { Table, Input, Popconfirm, Form, Modal, Button, Row, Col, InputNumber, Spin } from 'antd';
 import { EditOutlined } from '@ant-design/icons';
 import img404 from './images/404.svg';
 import {Link} from 'react-router-dom';
-
+import * as firebase from 'firebase/app';
 
 const FileInput = () => {
 
@@ -50,14 +50,30 @@ const EditableCell = ({
 export const ViewableImage = ({imageUrl}) => {
 
     const [visibility, setVisibility] = useState(false);
+    const [imgUrl, setImgUrl] = useState(undefined);
+
+    useEffect(() => {
+      if(imageUrl) {
+        firebase.storage().ref(imageUrl).getDownloadURL().then((url) => {
+          setImgUrl(url);
+        });
+      }else {
+        setImgUrl(null);
+      }
+    }, []);
+  
+    if(imgUrl === undefined) {
+      return <Spin size='small'/>;
+    }
+
     return (
       
       <a disabled={!imageUrl} onClick={() => {
         Modal.info({
           title: 'الصورة',
-          content: (<img src={imageUrl} alt='#'/>)
+          content: (<img style={{maxWidth: 300, maxHeight: 300}} src={imgUrl} alt='#'/>)
         })
-      }}>{imageUrl ? imageUrl.substr(0, 30): ''}...</a>
+      }}>{imageUrl ? imgUrl.substr(0, 30): ''}...</a>
       
     );
 }
@@ -86,14 +102,19 @@ export const EditableTable = ({originData, doctor}) => {
   const save = async (key) => {
     try {
       const row = await form.validateFields();
+      
       const newData = [...data];
       const index = newData.findIndex((item) => key === item.key);
 
       if (index > -1) {
         const item = newData[index];
         // record here
-        let files = document.getElementById('TableFileInput').files;
-        item.onUpdate(item.fieldName, row, files);
+        let input = document.getElementById('TableFileInput');
+        let file;
+        if(input) {
+          file = input.files[0];
+        }
+        item.onUpdate(item.fieldName, row, file);
         /////////
         newData.splice(index, 1, { ...item, ...row });
         setData(newData);
@@ -236,10 +257,10 @@ export const Page404 = () => {
 
 export const EditableField = ({children, onUpdate, number, initialValue}) => {
   const [isEditing, setEditingState] = useState(false);
-
+  const [form] = Form.useForm();
   if(isEditing) {
     return (
-      <Form>
+      <Form form={form}>
         <Row gutter={[8, 8]}>
 
         <Col flex={number ? '' : 'auto'}>
@@ -257,7 +278,11 @@ export const EditableField = ({children, onUpdate, number, initialValue}) => {
             <Button onClick={() => setEditingState(false)}>الغاء</Button>
           </Col>
           <Col flex='40px'>
-            <Button htmlType='submit' className='green-btn'>تعديل</Button>
+            <Button htmlType='submit' onClick={async () => {
+              if(!onUpdate) return;
+              onUpdate((await form.validateFields()).input);
+              setEditingState(false);
+            }} className='green-btn'>تعديل</Button>
           </Col>
           
         </Row>
@@ -278,6 +303,104 @@ export const EditableField = ({children, onUpdate, number, initialValue}) => {
   );
 }
 
+export function timeStampToDate(timestamp) {
 
+  return new Date(timestamp.seconds*1000);
+}
 
+export const usePagination = ({path, load_count, order, where})  => {
+  const [objects, setObjects] = useState({lastVisible: null, data: [], finished: false, noObjects: false});
+  const [progress, loadMore] = useState(0);
 
+  useEffect(() => {
+      let target = firebase.firestore().collection(path);
+      let data;
+      
+      (async function() {
+          if(order) {
+              data = await target.orderBy('date', order).limit(load_count).get();
+          }else {
+              if(where) {
+                let condition = where.split(' ');
+                
+                if(condition[0] === 'code') {
+                  data = await target.doc(condition[2]).get();
+                  
+                  if(data.exists) {
+                    data.docs = [data];
+                  }else {
+                    data.docs = [];
+                  }
+                }else {
+                  condition[2] = condition.slice(2, condition.length).join(' ');
+                  data = await target.where(condition[0], condition[1], condition[2]).limit(load_count).get();
+                }
+                
+              }else {
+                data = await target.limit(load_count).get();
+              }
+          }
+          
+          if(data.docs.length === 0) {
+            
+              setObjects({...objects, noObjects: true});
+          }else {
+            
+              setObjects({
+                  ...objects,
+                  lastVisible: data.docs[data.docs.length - 1],
+                  noObjects: false,
+                  data: data.docs.map((doc) => {
+                      return {...doc.data(), id: doc.id}
+                  })
+              });
+          }
+      })();
+
+      return () => window.onscroll = null;
+  }, [path, where]);
+
+  useEffect(() => {
+      if(progress) {
+          
+          let target = firebase.firestore().collection(path);
+          (async function() {
+              let data;
+              if(order)  {
+                  data = await target.orderBy('date', order).startAfter(progress).limit(load_count).get();
+              }else {
+                if(where) {
+                  let condition = where.split(' ');
+                  data = await target.where(condition[0], condition[1], condition[2]).startAfter(progress).limit(load_count).get();
+                }else {
+                  data = await target.startAfter(progress).limit(load_count).get();
+                }
+              }
+          
+              if(!data.docs[0]) {
+                  
+                  setObjects({...objects, finished: true});
+              }else {
+                  setObjects({
+                      ...objects,
+                      lastVisible: data.docs[data.docs.length - 1],
+                      data: [...objects.data, ...data.docs.map((doc) => {
+                          return {...doc.data(), id: doc.id}
+                      })]
+                      
+                  });
+              }
+          })();
+      }
+  }, [progress]); 
+
+  window.onscroll = !objects.finished ? function() {
+      if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 200) {
+          if(objects.lastVisible) {
+              loadMore(objects.lastVisible);
+          }
+      }
+  } : null;
+
+  return [objects, setObjects];
+}

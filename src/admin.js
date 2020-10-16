@@ -1,11 +1,12 @@
 import { Layout, Menu, Card, Divider, DatePicker,
-   Form, Button, TimePicker, Row, Col, Input, InputNumber, Upload, message, Select, Radio, Table, Spin } from 'antd';
+   Form, Button, TimePicker, Row, Col,Input, Progress ,InputNumber, Upload, message, Select, Radio, Table } from 'antd';
 import { Switch, Route, useHistory } from 'react-router-dom';
-import React, {useState, Component} from 'react';
+import React, {useState, Component, useEffect, useContext} from 'react';
 import {Link} from 'react-router-dom';
-import {reservationsModel, radiationTypes, logModel, studiesModel, adminsModel} from './App';
+import {userContext} from './App';
 import logo from './images/logo.jpg';
 import './stylesheets/admin.css';
+import * as firebase from 'firebase/app';
 import {
   DesktopOutlined,
   PieChartOutlined,
@@ -25,7 +26,7 @@ import {
 } from '@ant-design/icons';
 
 
-import { Page404, EditableField, reshaped, Loader } from './kit';
+import { Page404, EditableField, reshaped, Loader, timeStampToDate, usePagination } from './kit';
 import { ReservationPage } from './start_page';
 import { useLocation, NavLink } from 'react-router-dom/cjs/react-router-dom.min';
 import { PreviewStudyPage, DoctorProfilePage } from './doctor';
@@ -33,9 +34,10 @@ import { PreviewStudyPage, DoctorProfilePage } from './doctor';
 const { Content,Sider } = Layout;
 
 const ReservationCardForm = ({reservation}) => {
-
+  const [form] = Form.useForm()
+  const [loading, setLoading] = useState(false);
   return (
-    <Form dir='ltr'>
+    <Form form={form} dir='ltr'>
       <Row>
         <Col flex='auto'>
           <Form.Item  name='date'
@@ -61,10 +63,57 @@ const ReservationCardForm = ({reservation}) => {
         </Col>
 
         <Col flex='50px'>
-          <Button htmlType='submit'>اتمام الحجز</Button>
+          <Button disabled={loading} onClick={async () => {
+            const data = await form.validateFields();
+            setLoading(true);
+            const date = data.date._d;
+            const time = data.time._d;
+            
+            let doctorEarns = null;
+            let moneyToPay = 0;
+            
+            if(reservation.doctor) {
+              let doc = await firebase.firestore().collection('doctors').doc(reservation.doctor.id).get();
+              let {discount, earns} = doc.data();
+              
+              for(let i in reservation.radiations) {
+                let radiation = reservation.radiations[i];
+                if(discount.radiations.indexOf(radiation.price) === -1) {
+                  moneyToPay += radiation.price;
+                }else {
+                  if(discount.type === 'value') {
+                    moneyToPay += radiation.price - discount.value;
+                  }else {
+                    moneyToPay += radiation.price*(1 - discount.value/100);
+                  }
+                }
+              }
+              
+              if(earns.type === 'value') {
+                doctorEarns = earns.value;
+              }else {
+                doctorEarns = moneyToPay*(earns.value/100);
+              }
+            }else {
+              reservation.radiations.forEach(r => moneyToPay+=r.price);
+            }
+
+            let day = parseInt(date.toDateString().split(' ')[2]); // mkanet4 3ayza t4t8al 8er kda :)
+            
+            firebase.firestore().collection('reservations').doc(reservation.phoneNumber).update({
+              accepted: true,
+              date: new Date(date.getFullYear(), date.getMonth(),
+               day, time.getHours(), time.getMinutes(), time.getSeconds()),
+               moneyToPay: moneyToPay,
+               doctorEarns: doctorEarns
+            });
+
+            window.alert('تم حجز الموعد بنجاح');
+        
+          }} htmlType='submit'>اتمام الحجز</Button>
         </Col>
         <Col style={{marginLeft:5, marginTop: window.screen.availWidth < 357 ? 5 : 0}} flex='50px'>
-          <Button danger htmlType='submit'>رفض الطلب</Button>
+          <Button disabled={loading} onClick={() => firebase.firestore().collection('reservations').doc(reservation.phoneNumber).delete()} danger htmlType='submit'>رفض الطلب</Button>
         </Col>
       </Row>
     </Form>
@@ -72,54 +121,124 @@ const ReservationCardForm = ({reservation}) => {
 }
 
 
-const AcceptedReservationsPage = () => {
-  const acceptedReservations = [1,2,3,4].map(() => {
+const StudyReservationCard = ({reservation}) => {
 
-    return {...reservationsModel[0], date: new Date(), moneyToPay: 90};
-  });
+  const [loading, setLoading] = useState(false);
+
+
+  return (
+    <Card key={reservation.phoneNumber} style={{marginTop: 17}} title={reservation.name}>
+      <p> رقم الهاتف : {reservation.phoneNumber} </p>
+      <p> الطبيب المسؤل  : {reservation.doctor ? reservation.doctor.name : 'طبيب غير متعاقد معه'} </p>
+      <p> المبلغ المطلوب  : <b>{reservation.moneyToPay} EGP </b></p>
+      <p> اليوم : {reservation.date.toLocaleDateString()}</p>
+      <p> الميعاد :  {reservation.date.toLocaleTimeString()} </p>
+      <b>الاشعة المطلوبة</b>
+      <ul>
+          {reservation.radiations.map((r, i) => <li key={i}>{r.name}</li>)}
+      </ul>
+
+      <Divider />
+      <Row>
+        <Col flex='auto'>
+          <Button onClick={async () => {
+            if(window.confirm('برجاء تأكيد عملية الدفع')) {
+              setLoading(true);
+              let res = await firebase.functions().httpsCallable('createPatient')(reservation);
+
+              if(reservation.doctorEarns) {
+                firebase.firestore().collection('doctors').doc(reservation.doctor.id).get().then(doc => {
+                  firebase.firestore().collection('doctors').doc(reservation.doctor.id).update({
+                    balance: doc.data().balance + reservation.doctorEarns
+                  });
+                });
+              }
+
+              await firebase.firestore().collection('logs').doc().set({
+                code: res.data.patientCode,
+                date: new Date(),
+                doctorName: reservation.doctor ? reservation.doctor.name : 'غير متعاقد معه',
+                studyName: reservation.name,
+                radiations: reservation.radiations.map(r => r.name),
+                totalPayed: reservation.moneyToPay,
+                totalRecieved: reservation.moneyToPay - (reservation.doctorEarns ? reservation.doctorEarns : 0)
+              });
+              
+              firebase.firestore().collection('reservations').doc(reservation.phoneNumber).delete();
+              message.success('تمت عملية الدفع بنجاح !');
+            }
+          }} disabled={loading} style={{width: '95%'}} type='primary'>تم الدفع</Button>
+        </Col>
+
+        <Col flex='auto'>
+          <Button onClick={() => {
+            if(window.confirm('هل انت متأكد تود الغاء الحجز ؟')) {
+              setLoading(true);
+              firebase.firestore().collection('reservations').doc(reservation.phoneNumber).delete();
+            }
+          }} disabled={loading} style={{width: '95%'}} danger type='primary'>الغاء الحجز</Button>
+        </Col>
+      </Row>
+  </Card>
+  );
+  
+}
+
+const AcceptedReservationsPage = () => {
+  const [acceptedReservations, setReservations] = useState(undefined);
+
+  useEffect(() => {
+    const unsubscribe = firebase.firestore().collection('reservations').where('accepted', '==', true).onSnapshot(sn => {
+      setReservations(sn.docs.map((doc) => {
+        let data = doc.data();
+        data.date = timeStampToDate(data.date);
+        return {...data,phoneNumber: doc.id};
+      }));
+    });
+
+    return unsubscribe
+  }, []);
+  if(acceptedReservations === undefined) {
+    return <Loader />;
+  }
+
+  if(acceptedReservations.length === 0) {
+    return <center><h1>لا يوجد حتي الان اي معاد </h1></center>;
+  }
   return (
     acceptedReservations.map(reservation => {
 
-      return (
-        <Card key={reservation.phoneNumber} style={{marginTop: 17}} title={reservation.name}>
-          <p> رقم الهاتف : {reservation.phoneNumber} </p>
-          <p> الطبيب المسؤل  : {reservation.doctor.name} </p>
-          <p> المبلغ المطلوب  : <b>{reservation.moneyToPay} EGP </b></p>
-          <p> اليوم : {reservation.date.toLocaleDateString()}</p>
-          <p> الميعاد :  {reservation.date.toLocaleTimeString()} </p>
-          <b>الاشعة المطلوبة</b>
-          <ul>
-              {reservation.radiations.map((r, i) => <li key={i}>{r}</li>)}
-          </ul>
-
-          <Divider />
-          <Row>
-            <Col flex='auto'>
-              <Button style={{width: '95%'}} type='primary'>تم الدفع</Button>
-            </Col>
-
-            <Col flex='auto'>
-              <Button style={{width: '95%'}} danger type='primary'>الغاء الحجز</Button>
-            </Col>
-          </Row>
-      </Card>
-      );
+      return <StudyReservationCard key={reservation.phoneNumber} reservation={reservation}/>;
     })
   );
 }
 
 const ReservationsPage = () => {
-    const reservations = [...reservationsModel, ...reservationsModel, ...reservationsModel];
+    const [reservations, setReservations] = useState(undefined);
+
+    useEffect(() => {
+      let unsubscribe = firebase.firestore().collection('reservations').where('accepted', '==', false).onSnapshot((sn) => {
+        setReservations(sn.docs.map(doc => {
+
+          return {phoneNumber: doc.id, ...doc.data()};
+        }));
+      });
+
+      return unsubscribe;
+    }, []);
+    if(reservations === undefined) return <Loader />;
     return (
         <div>
+          <h1 style={{margin: 20}}>الطلبات</h1>
+          {reservations.length === 0 ? <h3 style={{marginRight: 25}}>لا توجد طلبات الي الان</h3> : <></>}
             {reservations.map(reservation => {
                 return (
                 <Card key={reservation.phoneNumber} style={{marginTop: 17}} title={reservation.name}>
                     <p> رقم الهاتف : {reservation.phoneNumber} </p>
-                    <p> الطبيب المسؤل  : {reservation.doctor.name} </p>
+                    <p> الطبيب المسؤل  : {reservation.doctor ? reservation.doctor.name : 'طبيب غير متعاقد معه'} </p>
                     <b>الاشعة المطلوبة</b>
                     <ul>
-                        {reservation.radiations.map((r, i) => <li key={i}>{r}</li>)}
+                        {reservation.radiations.map((r, i) => <li key={i}>{r.name}</li>)}
                     </ul>
 
                     <Divider />
@@ -136,7 +255,7 @@ const SideMenu = () => {
   const [collapsed, setCollapsed] = useState(window.screen.availWidth < 600);
   const history = useHistory();
   const location = useLocation();
- 
+  const admin = useContext(userContext);
   const navigate = (menuItem) => {
       history.push(menuItem.key);
   }
@@ -144,10 +263,13 @@ const SideMenu = () => {
       <Sider collapsible collapsed={collapsed} onCollapse={() => setCollapsed(!collapsed)}>
       <div style={{backgroundImage: `url(${logo})`, width: '100%',height: 90,marginTop: 10, backgroundPosition: 'center', backgroundSize: 'cover'}} />
       <Menu  defaultSelectedKeys={[location.pathname]} mode="inline">
-      <Menu.SubMenu key="admins-sub" title='الادمنز' icon={<UserOutlined />}>
-          <Menu.Item onClick={navigate} key='/admins'>الادمنز</Menu.Item>
-          <Menu.Item onClick={navigate} key='/add-admin'>اضافة ادمن</Menu.Item>
+      {admin.adminDegree > 1? 
+
+        <Menu.SubMenu key="admins-sub" title='الادمنز' icon={<UserOutlined />}>
+        <Menu.Item onClick={navigate} key='/admins'>الادمنز</Menu.Item>
+        <Menu.Item onClick={navigate} key='/add-admin'>اضافة ادمن</Menu.Item>
         </Menu.SubMenu> 
+      : <></>}
         <Menu.Item onClick={navigate} key="/" icon={<PieChartOutlined />}>
           طلبات الحجوزات
         </Menu.Item>
@@ -155,14 +277,16 @@ const SideMenu = () => {
           المواعيد
         </Menu.Item>
 
-        <Menu.SubMenu icon={<DesktopOutlined />} title='العيادات' key='clinics-sub'>
-        <Menu.Item onClick={navigate} key="/clinics">
-          جميع العيادات
-        </Menu.Item>
-        <Menu.Item onClick={navigate} key="/add-clinic">
-           اضافة عيادة
-        </Menu.Item>
-        </Menu.SubMenu>
+        {admin.adminDegree > 1 ? 
+            <Menu.SubMenu icon={<DesktopOutlined />} title='العيادات' key='clinics-sub'>
+            <Menu.Item onClick={navigate} key="/clinics">
+              جميع العيادات
+            </Menu.Item>
+            <Menu.Item onClick={navigate} key="/add-clinic">
+              اضافة عيادة
+            </Menu.Item>
+            </Menu.SubMenu> 
+        : <></>}
         
         <Menu.Item onClick={navigate} key="/logs" icon={<BarChartOutlined />}>
           التعاملات
@@ -180,11 +304,16 @@ const SideMenu = () => {
              رفع اشعة العملاء
         </Menu.Item>
 
+        {admin.adminDegree > 1 ? 
+        
         <Menu.Item onClick={navigate} key="/radiations" icon={<BorderInnerOutlined />}>
           الاشعة المتاحة
-        </Menu.Item>
-
-        <Menu.Item onClick={() => {}} key="/logout" icon={<LogoutOutlined />}>
+        </Menu.Item> : <></>
+        }
+        
+        <Menu.Item onClick={() => {
+          firebase.auth().signOut();
+        }} key="/logout" icon={<LogoutOutlined />}>
            تسجيل الخروج
         </Menu.Item>
       </Menu>
@@ -201,12 +330,25 @@ const SideMenu = () => {
 
 
 const RadiationsPage = () => {
+  const [form] = Form.useForm();
+  const [radiations, setRadiations] = useState(undefined);
+
+  useEffect(() => {
+    firebase.firestore().collection('radiations').get().then(sn => {
+      setRadiations(sn.docs.map(doc => {return {...doc.data(), id: doc.id}}));
+    }).catch(() => {
+      setRadiations([]);
+    });
+  }, []);
+  if(radiations === undefined) {
+    return <Loader />;
+  }
 
   return (
     <div style={{margin: 10}}>
       <div style={{background: '#fff', padding: 15}}>
         <h1>اضافة اشعة جديدة</h1>
-        <Form>
+        <Form form={form}>
           <Form.Item
           name='name'
           label='اسم الاشعة'
@@ -237,36 +379,70 @@ const RadiationsPage = () => {
             <InputNumber />
           </Form.Item>
 
-          <Button className='btn-expanded' type='primary' htmlType='submit'>تسجيل</Button>
+          <Button onClick={async () => {
+            const data = await form.validateFields();
+            const id = Math.random()*10000000000000000;
+            const radiation = {
+              name: data.name,
+              price: data.price,
+              message: data.message
+            };
+            await firebase.firestore().collection('radiations').doc(`${id}`).set(radiation);
+            form.setFieldsValue({
+              name: '',
+              price: '',
+              message: ''
+            });
+
+            setRadiations([{...radiation, id: `${id}`}, ...radiations]);
+            
+          }} className='btn-expanded' type='primary' htmlType='submit'>تسجيل</Button>
         </Form>
       </div>
       <h1 style={{margin: '15px 5px', fontSize: 23}}>الاشعة المتوافرة</h1>
-      {radiationTypes.map(radiation => {
+      {radiations.length === 0? <h3>لا يوجد حتي الان</h3> : <></>}
+      {radiations.map((radiation, i) => {
 
         return (
-          <div key={radiation.name} style={{margin: 20, padding: 13, background: '#fff'}}>
+          <div key={radiation.id} style={{margin: 20, padding: 13, background: '#fff'}}>
             <Row>
               <h3>اسم الاشعة : </h3>
-              <EditableField initialValue={radiation.name}>
-                <h3 style={{marginRight: 5}}><b>{radiation.name}</b></h3>
-              </EditableField>
+              <h3 style={{marginRight: 5}}><b>{radiation.name}</b></h3>
             </Row>
 
             <Row>
               <h3> مواعيد الاشعة : </h3>
-              <EditableField initialValue={radiation.message}>
+              <EditableField onUpdate={(msg) => {
+                radiation.message = msg;
+                firebase.firestore().collection('radiations').doc(radiation.id).update({
+                  message: msg
+                });
+
+                setRadiations([...radiations]);
+              }} initialValue={radiation.message}>
                 <h3 style={{marginRight: 5}}><b>{radiation.message}</b></h3>
               </EditableField>
             </Row>
             
             <Row>
               <h3> التكلفة : </h3>
-              <EditableField number initialValue={radiation.price}>
+              <EditableField onUpdate={(price) => {
+                radiation.price = price;
+                firebase.firestore().collection('radiations').doc(radiation.id).update({
+                  price: price
+                });
+
+                setRadiations([...radiations]);
+              }} number initialValue={radiation.price}>
                 <h3 style={{marginRight: 5}}><b>{radiation.price} EGP</b></h3>
               </EditableField>
             </Row>
             
-            <a style={{color: 'red', textDecoration: 'underline'}}>مسح البيانات</a>
+            <a onClick={() => {
+              if(!window.confirm(`هل انت متأكد تريم مسح بيانات ${radiation.name}`)) return;
+              setRadiations(radiations.filter(r => r !== radiation));
+              firebase.firestore().collection('radiations').doc(radiation.id).delete();
+            }} style={{color: 'red', textDecoration: 'underline'}}>مسح البيانات</a>
           </div>
         );
       })}
@@ -275,16 +451,48 @@ const RadiationsPage = () => {
 }
 
 class RadiationsUploadPage extends Component {
-  // mkanet4 radya tt3ml hook :)
+  // mkanet4 radya tt3ml function :)
 
-  state = {fileList: []}
+  state = {fileList: [], radiationTypes: undefined, uploadProgress: -1}
 
   isWellFormatted(file) {
-    return file.name.split('_').length === 2;
+    if(file.name.split('_').length !== 2) return false;
+    let rCode = parseInt(file.name.split('_')[1]);
+    return !(rCode >= this.state.radiationTypes.length || rCode < 0) 
   }
 
   componentDidMount() {
-    this.setState({...this.state, radiationTypes: radiationTypes});
+    firebase.firestore().collection('radiations').get().then(sn => {
+      this.setState({...this.state, radiationTypes: sn.docs.map( doc => doc.data())});
+    });
+    
+  }
+
+  async uploadFile(file) {
+    let [code, radiation] = file.name.split('_');
+    let key = Math.random()*100000000000 + '';
+    radiation = parseInt(radiation);
+
+    try {
+      await firebase.firestore().collection('studies').doc(code).update({
+        radiations: firebase.firestore.FieldValue.arrayUnion({
+          image: `patients/${code}/${key}`,
+          date: new Date(),
+          radiationType: this.state.radiationTypes[radiation].name
+        })
+      });
+
+      await firebase.storage().ref().child(`patients/${code}/${key}`).put(file);
+
+      this.setState(state => {
+        return {...state, uploadProgress: state.uploadProgress + (1/state.fileList.length)*100}
+      });
+    }catch {
+      this.setState(state => {
+        return {...state, status: 'exception', errorMessage: `الكود ${code} غير موجود`};
+      })
+    }
+    
   }
 
   render() {
@@ -319,15 +527,21 @@ class RadiationsUploadPage extends Component {
         
         beforeUpload={(file) => {
           if(this.isWellFormatted(file)) {
+            
             this.setState(state => {
               return {
+                ...state,
                 fileList: [...state.fileList, file]
               }
             });
           }else {
-            this.setState({
-              fileList: [...this.state.fileList]
-            });
+            
+            this.setState((state) => {
+              
+              return {
+              ...state,
+              fileList: [...state.fileList]
+            }});
 
             message.error(`الملف ${file.name} غير مركب بشكل صحيح`);
           }
@@ -340,6 +554,7 @@ class RadiationsUploadPage extends Component {
           this.setState(state => {
             
             return {
+              ...state,
               fileList: state.fileList.filter(f => f.name !== file.name)
             }
           });
@@ -347,7 +562,16 @@ class RadiationsUploadPage extends Component {
           <Button icon={<UploadOutlined />}>اختر الصور</Button>
         </Upload>
 
-        <Button disabled={this.state.fileList.length === 0} type='primary' style={{marginTop: 10}}>ابدأ الرفع</Button>
+        <Button onClick={() => {
+          this.setState(state => {
+            return {...state, uploadProgress: 0};
+          })
+          this.state.fileList.forEach((file) => this.uploadFile(file));
+        }} disabled={this.state.fileList.length === 0 || this.state.uploadProgress !== -1}  type='primary' style={{marginTop: 10}}>ابدأ الرفع</Button>
+        {
+          this.state.uploadProgress !== -1?
+          <Progress style={{margin: 20}} type='circle' status={this.state.status}  percent={Math.ceil(this.state.uploadProgress)}/> : <></>}
+          {this.state.errorMessage ? <h3 style={{color: 'red'}}>{this.state.errorMessage}</h3> : <></>}
       </div>
     );
   }
@@ -356,7 +580,17 @@ class RadiationsUploadPage extends Component {
 
 const LogsPage = () => {
 
-  const logs = [logModel, logModel, logModel, logModel, logModel];
+  const [data, setLogs] = usePagination({path: 'logs', load_count: 12, order: 'desc'});
+
+  let logs = data.data;
+  
+  if(!logs) {
+    return <Loader />;
+  }
+
+  if(data.noObjects) {
+    return <h1>لا توجد تعاملات مسجلة</h1>;
+  }
   return (
     <div style={{margin: 15}}>
       <h1 ><b>اخر التعاملات</b></h1>
@@ -374,8 +608,7 @@ const LogsPage = () => {
           </ul>
           <h4> اجمالي المبلغ المدفوع  : {log.totalPayed} EGP</h4>
           <h4>   الربح  : <b style={{color: 'green'}}>{log.totalRecieved} EGP</b></h4>
-          <h4>تاريخ العملية : {log.date.toLocaleDateString()} {log.date.toLocaleTimeString()}</h4>
-          <Button style={{position: 'absolute', left: -8, top: -8}} icon={<CloseOutlined />} shape='circle'/>
+          <h4>تاريخ العملية : {timeStampToDate(log.date).toLocaleDateString()} {timeStampToDate(log.date).toLocaleTimeString()}</h4>
           </div>
           </Col>)}
         </Row>
@@ -386,6 +619,7 @@ const LogsPage = () => {
 
 const AddAdminPage = () => {
   const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
   return (
     <div className='start-container'>
       <div className='login-form'>
@@ -397,7 +631,9 @@ const AddAdminPage = () => {
           rules={[
             {
               required: true,
-              message: 'يجب ادخال اسم الادمن'
+              message: 'يجب ادخال اسم الادمن بشكل صحيح بالانجليزية',
+              pattern: /^[a-zA-Z]+$/
+             
             }
           ]}
           >
@@ -436,17 +672,83 @@ const AddAdminPage = () => {
             </Radio.Group>
           </Form.Item>
 
-          <Button className='btn-expanded' type='primary' htmlType='submit'>اضافة</Button>
+          <Button dir='ltr' loading={loading} onClick={async () => {
+            const data = await form.validateFields();
+            setLoading(true);
+            
+            let res = await firebase.functions().httpsCallable('createAdmin')({
+              email: `${data.username}@ganna.com`,
+              password: data.password,
+              adminDegree: data.degree
+            });
+
+            if(res.data.ok) {
+              await firebase.firestore().collection('admins').doc(res.data.adminID).set({
+                name: data.username,
+                password: data.password,
+                degree: data.degree
+              });
+
+              setLoading(false);
+              form.setFieldsValue({
+                username: '',
+                password: '',
+                degree: ''
+              });
+              return message.success('تم اضافة الادمن بنجاح');
+            }
+
+            message.error('Oops, some thing went wrong');
+          }} className='btn-expanded' type='primary' htmlType='submit'>اضافة</Button>
         </Form>
       </div>
     </div>
   );
 }
 
+
+const PatietnsPageBody = ({searchValue, searchType}) => {
+  const [data, setData] = usePagination({
+    path: 'studies',
+    load_count: 13,
+    where: searchValue ? `${searchType} == ${searchValue}` : null 
+  });
+  
+  const results = data.data;
+  if(data.noObjects && searchValue.length !== 0) {
+    return <h2 dir='ltr'>{searchType} '{searchValue}' doesn't exist :(</h2>
+  }
+  if(data.noObjects) {
+    return <h2>لا يوجد عملاء مسجلين حاليا</h2>;
+  }
+
+  return (
+
+    <div style={{margin: 10}}>
+    {reshaped(results, 4).map((res, i) => {
+
+      return <Row gutter={[16,16]} key={i}>
+        {res.map((k, j) => 
+          <Col flex='auto' key={k.id}>
+            <Link to={`preview-study/${k.id}`}>
+              <div className='card'>
+                  <h4>الاسم : {k.name}</h4>
+                  <h4>الكود : {k.id}</h4>
+                  <h4>رقم الهاتف : {k.phoneNumber}</h4>
+              </div>
+            </Link>
+          </Col>
+       )}
+      </Row>
+    })}
+  </div>
+
+  );
+}
+
 const PatientsPage = () => {
 
-  const results = [...studiesModel, ...studiesModel, ...studiesModel, ...studiesModel, ...studiesModel, ...studiesModel];
-  const [searchValue, setSearchValue] = useState();
+  const [searchValue, setSearchValue] = useState('');
   const [searchType, setType] = useState('name');
   
   return (
@@ -460,24 +762,7 @@ const PatientsPage = () => {
           </Select>} />
       </div>
 
-      <div style={{margin: 10}}>
-        {reshaped(results, 4).map((res, i) => {
-
-          return <Row gutter={[16,16]} key={i}>
-            {res.map((k, j) => 
-              <Col flex='auto' key={j}>
-                <Link to={`preview-study/${k.uid}`}>
-                  <div className='card'>
-                      <h4>الاسم : {k.name}</h4>
-                      <h4>الكود : {k.uid}</h4>
-                      <h4>رقم الهاتف : {k.phoneNumber}</h4>
-                  </div>
-                </Link>
-              </Col>
-           )}
-          </Row>
-        })}
-      </div>
+      <PatietnsPageBody searchValue={searchValue.trim()} searchType={searchType} />
     </div>
   );
 }
@@ -485,14 +770,25 @@ const PatientsPage = () => {
 
 const AdminsPreviewPage = () => {
 
-  const admins = adminsModel;
+  const [admins, setAdmins] = useState(undefined);
 
+  useEffect(() => {
+    firebase.firestore().collection('admins').onSnapshot((sn) => {
+      setAdmins(sn.docs.map(d => {
+        return {...d.data(), id: d.id};
+      }));
+    });
+  }, []);
+  if(admins === undefined) {
+    return <Loader />;
+  }
+  
   return <div style={{margin: 20}}>
     <h1 style={{marginTop: 10, marginBottom: 10}}>المديرين</h1>
     {reshaped(admins.filter(i => i.degree > 1), 3).map((adminsRow, i) => {
       return <Row gutter={[16, 16]} key={i}>
         {adminsRow.map(admin => {
-          return <Col flex='auto'><div className='card' key={admin.name}>
+          return <Col flex='auto'><div className='card' key={admin.id}>
               <h3>الاسم : {admin.name}</h3>
               <h3>كلمة السر : {admin.password}</h3>
           </div></Col>
@@ -505,10 +801,22 @@ const AdminsPreviewPage = () => {
     {reshaped(admins.filter(i => i.degree === 1), 3).map((adminsRow, i) => {
       return <Row gutter={[16, 16]} key={i}>
         {adminsRow.map(admin => {
-          return <Col flex='auto'><div className='card' key={admin.name}>
+          return <Col flex='auto'><div className='card' key={admin.id}>
               <h3>الاسم : {admin.name}</h3>
               <h3>كلمة السر : {admin.password}</h3>
-              <Button danger>مسح الحساب</Button>
+              <Button onClick={async () => {
+                if(window.confirm(`هل انت متأكد تريد مسح حساب ${admin.name} ؟`)) {
+                  let res = await firebase.functions().httpsCallable('deleteAdmin')({
+                    adminID: admin.id
+                  });
+
+                  if(res.data.ok) {
+                    return await firebase.firestore().collection('admins').doc(admin.id).delete()
+                  }
+
+                  message.error('Oops, something went wrong');
+                }
+              }} danger>مسح الحساب</Button>
           </div></Col>
         })}
       </Row>;
@@ -519,17 +827,35 @@ const AdminsPreviewPage = () => {
 
 
 const ClinicsPage = () => {
-  const clinics = [{doctors: [{313:'ahmed kamal'}, {123:'omar mohamed'}],id: 'adasdasd', name: 'الصفا و المروا'},
-  {doctors: [{313:'ahmed kamal'}, {123:'omar mohamed'}],id: 'asdasdasdas', name: 'الصفا و المروا'},
-   {doctors: [{313:'ahmed kamal'}, {123:'omar mohamed'}],id: 'asdasdasd', name: 'الصفا و المروا'}];
+  const [clinics, setClinics] = useState(undefined);
 
+
+   useEffect(() => {
+     (async () => {
+       const fs = firebase.firestore();
+       let allClinics = (await fs.collection('clinics').get()).docs.map(doc => {
+         let data = doc.data();
+         if(data.doctors.length === 0) {
+           data.doctors = [{0: 'لا يوجد اطباء مسجلين'}];
+         }
+         
+        return {...data, id: doc.id};
+       });
+
+       setClinics(allClinics);
+     })();
+   }, []);
+
+   if(clinics === undefined) {
+     return <Loader />;
+   }
    return <div style={{padding: 20}}>
      <h1>العيادات المتعاقد معها</h1>
-     {reshaped(clinics, 3).map((arr) => {
+     {clinics.length === 0 ? <h3>لا توجد عيادات حتي الان</h3>: reshaped(clinics, 3).map((arr, i) => {
 
-       return <Row gutter={[16, 16]}>
+       return <Row key={i} gutter={[16, 16]}>
          {arr.map(clinic => {
-           return <Col flex='auto'>
+           return <Col key={clinic.id} flex='auto'>
              <Link style={{color: 'black'}} to={`/clinics/${clinic.id}`}>
               <div style={{border: '2px solid dodgerblue'}} className='card'>
                   <h3><b>{clinic.name}</b></h3>
@@ -567,13 +893,17 @@ const ClinicPage = ({match}) => {
 
 const AddDoctorRoute = ({match}) => {
 
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
+  const history = useHistory();
+  
   return (
     <div style={{width: '100%', padding: 20,
      display: 'flex', justifyContent: 'center',
       alignItems: 'center', height: '100%'}}>
         <div style={{width: 'auto'}} className='login-form'>
           <center><h1>اضافة طبيب</h1></center>
-        <Form>
+        <Form form={form}>
           <label>الاسم</label>
           <Form.Item
           name='username'
@@ -598,6 +928,27 @@ const AddDoctorRoute = ({match}) => {
           ]}
           >
             <Input />
+          </Form.Item>
+
+          <label>التخصص</label>
+          <Form.Item
+          name='specialization'
+          rules={[
+            {
+              required: true,
+            }
+          ]}
+          >
+            <Select >
+                <Select.Option value='المعالجة اللبية Endodontic'>المعالجة اللبية Endodontic</Select.Option>
+                <Select.Option value='طب دواعم الأسنان Periodontic'>طب دواعم الأسنان Periodontic</Select.Option>
+                <Select.Option value='تقويم الأسنان Orthodontic'>تقويم الأسنان Orthodontic</Select.Option>
+                <Select.Option value='جراحة الفم والوجه والفكين Oral and Maxillofacial surgery'>جراحة الفم والوجه والفكين Oral and Maxillofacial surgery</Select.Option>
+                <Select.Option value='طب أسنان الأطفال pediatric'>طب أسنان الأطفال pediatric</Select.Option>
+                <Select.Option value='الصحة العامة للأسنان Dental public health'>الصحة العامة للأسنان Dental public health</Select.Option>
+                <Select.Option value='أمراض الفم والوجه والفكين Oral and Maxillofacial pathology'>أمراض الفم والوجه والفكين Oral and Maxillofacial pathology</Select.Option>
+                <Select.Option value='أشعة الفم والوجه Oral and Maxillofacial radiology'>أشعة الفم والوجه Oral and Maxillofacial radiology</Select.Option>
+            </Select>
           </Form.Item>
 
           <label>الكود</label>
@@ -630,7 +981,81 @@ const AddDoctorRoute = ({match}) => {
             />
           </Form.Item>
 
-          <Button className='btn-expanded' type='primary' htmlType='submit'>اضافة</Button>
+          <Button onClick={async () => {
+            
+            await form.validateFields();
+            setLoading(true);
+            const data = form.getFieldsValue();
+
+            data.clinicID = match.params.id;
+            let res = await firebase.functions().httpsCallable('createDoctor')({
+              password: data.password,
+              code: data.code,
+              clinicID: match.params.id
+            });
+
+            if(res.data.ok) {
+              const doctor = {uid: data.code};
+              await firebase.firestore().collection('doctors').doc(doctor.uid).set({
+                name: data.username,
+                clinicID: match.params.id,
+                discount: {
+                    radiations: [],
+                    type: 'value',
+                    value: 0,
+                },
+                earns: {
+                    type: 'percentage',
+                    value: 0
+                },
+                balance: 0,
+            });
+
+           
+            let obj = {};
+            
+            obj[doctor.uid] = data.username;
+            await firebase.firestore().collection('clinics').doc(data.clinicID).update({
+                doctors: firebase.firestore.FieldValue.arrayUnion(obj)
+            });
+
+            await firebase.firestore().collection('clinics').doc(data.clinicID).collection('doctors').doc(doctor.uid).set({
+                name: data.username,
+                phoneNumber: data.phoneNumber,
+                image: null,
+                contractionDate: new Date(),
+                secretaryName: null,
+                responsibleEmployee: null,
+                secretaryPhoneNumber: null,
+                email: null,
+                whatsAppNumber: null,
+                cardImage: null,
+                specialization: data.specialization,
+                password: data.password,
+                showDiscount: false,
+
+            });
+
+            try {
+              await firebase.firestore().collection('doctors').doc('all').update(
+                {
+                  doctors: firebase.firestore.FieldValue.arrayUnion(obj)
+              });
+
+            }catch {
+              await firebase.firestore().collection('doctors').doc('all').set(
+                {
+                  doctors: [obj]
+              }
+              );
+            }      
+
+            history.push(`/doctor-preview/${match.params.id}/${doctor.uid}`);
+            }else {
+              message.error(res.data.message);
+              setLoading(false);
+            }
+          }} loading={loading} dir='ltr' className='btn-expanded' type='primary' htmlType='submit'>اضافة</Button>
         </Form>
 
         </div>
@@ -640,21 +1065,24 @@ const AddDoctorRoute = ({match}) => {
 }
 
 const ClinicAddAccountantRoute = ({match}) => {
-  
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
+
   return (
     <div style={{width: '100%', padding: 20,
      display: 'flex', justifyContent: 'center',
       alignItems: 'center', height: '100%'}}>
         <div className='login-form'>
           <center><h1>اضافة محاسب</h1></center>
-        <Form>
+        <Form form={form}>
           <label>الاسم</label>
           <Form.Item
           name='username'
           rules={[
             {
               required: true,
-              message: 'يجب ادخال الاسم '
+              message: ' يجب ادخال الاسم',
+              
             }
           ]}
           >
@@ -691,7 +1119,36 @@ const ClinicAddAccountantRoute = ({match}) => {
             />
           </Form.Item>
 
-          <Button className='btn-expanded' type='primary' htmlType='submit'>اضافة</Button>
+          <Button onClick={async () => {
+            await form.validateFields();
+            const data = form.getFieldsValue();
+            setLoading(true);
+            try {
+              let res = await firebase.functions().httpsCallable('createAccountant')({
+                email: `${data.phoneNumber}@ganna.com`,
+                password: data.password,
+                name: data.username,
+                phoneNumber: data.phoneNumber,
+                clinicID: match.params.id
+              });
+
+              if(res.data.ok) {
+                form.setFieldsValue({
+                  username: '',
+                  password: '',
+                  phoneNumber: ''
+                });
+  
+                message.success('تم اضافة حساب المحاسب بنجاح');
+                setLoading(false);
+              }
+  
+          }catch(e) {
+            message.error('يوجد محاسب مسجل برقم الهاتف هذا بالفعل');
+            setLoading(false);
+          }
+
+          }} dir='ltr' loading={loading} className='btn-expanded' type='primary' htmlType='submit'>اضافة</Button>
         </Form>
 
         </div>
@@ -701,41 +1158,43 @@ const ClinicAddAccountantRoute = ({match}) => {
 }
 
 const ClinicInfoRoute = ({match}) => {
-  const clinic = {
-    id: 'adasdakdak',
-    name: 'الصفا و المروا',
-    doctors: [
-      {221: 'ahmed kamal'},
-      {112:'ayman nour'}
-    ]
-  }
+  const [clinic, setClinic] = useState(undefined);
 
-  const accountants = [
-    {
-      name: 'ayman zein',
-      phoneNumber: '01005169329',
-      id: 'assAPSDKPOAksdpA03pOKSAd',
-      password: 'my password'
-    },
-    {
-      name: 'karim abbass',
-      phoneNumber: '01007927278',
-      id: 'afaAsAPSDKPOAksdpA03pOKSAd',
-      password: 'my second password'
-    }
-  ];
+  const [accountants, setAccountants] = useState(undefined);
+
+  useEffect(() => {
+    (async () => {
+      const fs = firebase.firestore();
+      let clinic = await fs.collection('clinics').doc(match.params.id).get();
+      let accountantsCol = await fs.collection('clinics').doc(match.params.id).collection('accountants').get();
+      accountantsCol = accountantsCol.docs.map(d => {
+
+        return {...d.data(), id: d.id};
+      });
+
+      setClinic(clinic.data());
+      setAccountants(accountantsCol);
+    })();
+  }, []);
+
+  if(!(accountants && clinic)) {
+    return <Loader />;
+  }
 
   return <div style={{width: '100%', padding: 20}}>
   <center><h1>عيادة {clinic.name}</h1></center>
   <div style={{background: '#fff', padding: 10}}>
     <h2><b>المحاسبين</b></h2>
     {
-      accountants.map(accountant => {
+      accountants.length === 0 ?
+      <ul>
+        <h3>لا يوجد محاسبين مسجلين</h3>
+      </ul>
+      :accountants.map(accountant => {
 
         return <div key={accountant.id}>
-            <h4>الاسم: {accountant.name}</h4>
+            <h4>اسم المحاسب: {accountant.name}</h4>
             <h4>رقم الهاتف: {accountant.phoneNumber}</h4>
-            <h4> اسم المستخدم: {accountant.id.substr(0, 6)}</h4>
             <h4>كلمة المرور: {accountant.password}</h4>
             <Divider />
         </div>
@@ -746,10 +1205,16 @@ const ClinicInfoRoute = ({match}) => {
   <div style={{background: '#fff', padding: 10, marginTop: 15}}>
     <h2><b>الاطباء</b></h2>
     <ul>
-      {clinic.doctors.map(doctor => {
+      {clinic.doctors.length === 0 ?
+      
+      <h3>لا يوجد اطباء مسجلين</h3>: 
+      
+      clinic.doctors.map(doctor => {
         const docId = Object.keys(doctor)[0];
-          return <li key={docId}><Link to={`/doctor-preview/${clinic.id}/${docId}`}>{Object.values(doctor)[0]}</Link></li>;
-      })}
+          return <li key={docId}><Link to={`/doctor-preview/${match.params.id}/${docId}`}>{Object.values(doctor)[0]}</Link></li>;
+      })
+      }
+      
     </ul>
   </div>
 </div>
@@ -758,14 +1223,15 @@ const ClinicInfoRoute = ({match}) => {
 }
 
 const AddClinicPage = () => {
+  const [form] = Form.useForm();
   return (
     <div className='start-container'>
       <div className='login-form'>
         <center><h1>اضافة العيادة</h1></center>
-        <Form>
+        <Form form={form}>
           <label>اسم العيادة</label>
           <Form.Item
-          name='username'
+          name='clinicName'
           rules={[
             {
               required: true,
@@ -776,17 +1242,25 @@ const AddClinicPage = () => {
             <Input />
           </Form.Item>
 
-          <Button className='btn-expanded' type='primary' htmlType='submit'> اضف العيادة</Button>
+          <Button onClick={() => {
+            
+            form.validateFields().then(() => {
+              if(!window.confirm(`هل انت متأكد من انك تريد اضافة عيادة "${form.getFieldValue('clinicName')}"`)) return;
+              firebase.firestore().collection('clinics').doc().set({
+                name: form.getFieldValue('clinicName'),
+                doctors: []
+              }).then(() => {
+                form.setFieldsValue({clinicName: ''});
+                message.success('تمت اضافة العيادة بنجاح');
+              })
+            });
+          }} className='btn-expanded' type='primary' htmlType='submit'> اضف العيادة</Button>
         </Form>
       </div>
     </div>
   );
 }
 
-const DoctorPreviewPage = ({match}) => {
-
-  return <DoctorProfilePage id={match.params.id} clinicID={match.params.clinicID}/>
-}
 
 export default () => {
     
@@ -797,7 +1271,30 @@ export default () => {
           <Content dir='rtl' style={{ margin: '10px 16px 0px 16px' }}>
               <Switch>
                   <Route path='/' exact component={ReservationsPage}/>
-                  <Route path='/add-patient'><ReservationPage /></Route>
+                  <Route path='/add-patient'><ReservationPage onSubmit={async (data) => {
+
+                    try {
+                      let res = await firebase.functions().httpsCallable('makeReservation')({
+                        name: data.name,
+                        doctor: data.doctor === 'other' ? null : {
+                          id: Object.keys(data.doctor)[0],
+                          name: Object.values(data.doctor)[0]
+                        },
+                        phoneNumber: data.phoneNumber,
+                        radiations: data.radiations.map(r => {
+                          return r.id;
+
+                        }),
+                        address: data.address
+                      });
+
+                      if(res.data.ok) {
+                        window.alert('تم الحجز بنجاح');
+                      }
+                  }catch {
+                    window.alert('Oops, something went wrong');
+                  }
+                  }} /></Route>
                   <Route path='/accepted-reservations' component={AcceptedReservationsPage}/>
                   <Route path='/radiations' component={RadiationsPage}/>
                   <Route path='/radiations-upload' component={RadiationsUploadPage}/>
@@ -809,7 +1306,7 @@ export default () => {
                   <Route path='/clinics/:id' component={ClinicPage} />
                   <Route path='/clinics' component={ClinicsPage} />
                   <Route path='/add-clinic' component={AddClinicPage}/>
-                  <Route path='/doctor-preview/:clinicID/:id' component={DoctorPreviewPage}/>
+                  <Route path='/doctor-preview/:clinicID/:id' component={DoctorProfilePage}/>
                   <Route component={Page404}/>
               </Switch>
           </Content>
